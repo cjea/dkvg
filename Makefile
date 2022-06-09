@@ -1,7 +1,10 @@
 .PHONY: phony
 
-build: ## Build main.go into ./dkvg
+build: phony ## Build main.go into ./dkvg
 	go build -o dkvg main.go
+
+run: phony ## Run main.go
+	go run main.go
 
 BLUE := $(shell tput setaf 4)
 RESET := $(shell tput sgr0)

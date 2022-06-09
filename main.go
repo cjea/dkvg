@@ -258,7 +258,7 @@ func HandleNetworkReceived(c net.Conn) {
 	}
 }
 
-func ReadFromNetwork() {
+func ListenUnixSocket() {
 	var err error
 	l, err := net.Listen("unix", SockName)
 	must(err)
@@ -288,30 +288,41 @@ func InitKvStore() {
 	must(json.Unmarshal(data, &kvStore))
 }
 
-func ParseArgs() {
-	l := len(os.Args)
+func Usage(ec int) {
+	fmt.Printf("Usage: $0 [ --output path/to/output.json ] [ --sock /path/to/sock.sock ] [ --repl ] [ --help ]\n")
+	os.Exit(ec)
+}
+
+func ParseArgs(args []string) {
+	l := len(args)
 	for i := 0; i < l; i++ {
-		arg := os.Args[i]
+		arg := args[i]
 		switch arg {
+		case "--help", "-h", "help":
+			Usage(0)
 		case "--repl":
 			UseREPL = true
 		case "--output", "-o":
-			OutputFile = os.Args[i+1]
+			OutputFile = args[i+1]
+			fmt.Printf("Setting output file: %s\n", OutputFile)
 			i++
 		case "--sock", "-s":
-			SockName = os.Args[i+1]
+			SockName = args[i+1]
+			fmt.Printf("Setting socket name: %s\n", SockName)
 			i++
+		default:
+			panic("unrecognized arg: " + arg)
 		}
 	}
 }
 
 func main() {
-	ParseArgs()
+	ParseArgs(os.Args[1:])
 	InitKvStore()
 	if UseREPL {
 		REPL()
 	} else {
-		ReadFromNetwork()
+		ListenUnixSocket()
 	}
 }
 

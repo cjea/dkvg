@@ -4,8 +4,9 @@ build: phony ## Build main.go into ./dkvg
 	go build -o dkvg main.go
 
 SOCKET ?= /tmp/dkvg.sock
-run: free-socket phony ## Run main.go
-	go run main.go --sock $(SOCKET)
+OUTPUT_FILE ?= $(PWD)/store.json
+run: free-socket phony ## Run main.go. Override $SOCKET or $OUTPUT_FILE env vars to set different paths for those values. Defaults to /tmp/dkvg.sock, and $PWD/store.json
+	go run main.go --sock $(SOCKET) --output $(OUTPUT_FILE)
 
 free-socket: phony ## Remove SOCKET if in use.
 	rm $(SOCKET) 2>/dev/null || true

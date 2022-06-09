@@ -10,12 +10,13 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 )
 
 var (
-	OutputFile     = "store.json"
-	UseInteractive = false
-	SockName       = "/tmp/dkvg.sock"
+	UseREPL    = false
+	OutputFile = "store.json"
+	SockName   = "/tmp/dkvg.sock"
 )
 
 const (
@@ -31,7 +32,7 @@ const (
 
 var (
 	ErrNotFound   = errors.New("not foundd")
-	ErrBadCommand = errors.New("unrecognized command")
+	ErrBadCommand = errors.New("unrecognized command (are you missing arguments?)")
 )
 
 type CmdType int
@@ -44,6 +45,7 @@ const (
 )
 
 var kvStore = map[string]string{}
+var kvStoreMutex = sync.Mutex{}
 
 func Persist(store map[string]string) error {
 	var err error
@@ -53,19 +55,6 @@ func Persist(store map[string]string) error {
 	}
 	err = ioutil.WriteFile(OutputFile, serialized, 0644)
 	return err
-}
-
-func setVal(store map[string]string, key string, val string) error {
-	kvStore[key] = val
-	return nil
-}
-
-func getKey(store map[string]string, key string) (string, error) {
-	val, ok := kvStore[key]
-	if !ok {
-		return "", fmt.Errorf("%s: %w", key, ErrNotFound)
-	}
-	return val, nil
 }
 
 type Cmd struct {
@@ -85,7 +74,7 @@ func ParseSet(raw string) (*Cmd, error) {
 	parts := strings.SplitN(raw, "=", 2)
 	if len(parts) != 2 {
 		return nil, fmt.Errorf(
-			"malformed set command (must contain one '=': %w",
+			"malformed set command (must contain one '='): %w",
 			ErrBadCommand,
 		)
 	}
@@ -104,8 +93,10 @@ func ParseSet(raw string) (*Cmd, error) {
 
 func KvSet(pair Pair) error {
 	var err error
+	kvStoreMutex.Lock()
 	kvStore[pair.Left] = pair.Right
 	err = Persist(kvStore)
+	kvStoreMutex.Unlock()
 	return err
 }
 
@@ -184,7 +175,7 @@ func (d Dispatcher) Dispatch(cmd *Cmd) error {
 
 func ParseRaw(raw string) (*Cmd, error) {
 	raw = strings.TrimSpace(raw)
-	if (raw == "quit" || raw == "q") && UseInteractive {
+	if (raw == "quit" || raw == "q") && UseREPL {
 		return &Cmd{Type: CmdQuit}, nil
 	} else if strings.HasPrefix(raw, PrefixSet) {
 		return ParseSet(strings.TrimPrefix(raw, PrefixSet))
@@ -243,10 +234,10 @@ func REPL() {
 func NewSocketWriteConfig(c net.Conn) WriteConfig {
 	return WriteConfig{
 		WriteData: func(s string, args ...interface{}) {
-			c.Write([]byte(fmt.Sprintf(s, args)))
+			c.Write([]byte(fmt.Sprintf(s, args...)))
 		},
 		WriteErr: func(s string, args ...interface{}) {
-			c.Write([]byte(fmt.Sprintf(s, args)))
+			c.Write([]byte(fmt.Sprintf(s, args...)))
 		},
 	}
 }
@@ -255,6 +246,7 @@ func HandleNetworkReceived(c net.Conn) {
 	buf := make([]byte, 1<<9)
 	handler := InputHandler{WriteConfig: NewSocketWriteConfig(c)}
 	for {
+		handler.WriteConfig.WriteErr(PROMPT)
 		nr, err := c.Read(buf)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
@@ -301,10 +293,13 @@ func ParseArgs() {
 	for i := 0; i < l; i++ {
 		arg := os.Args[i]
 		switch arg {
-		case "--interactive", "-i":
-			UseInteractive = true
+		case "--repl":
+			UseREPL = true
 		case "--output", "-o":
 			OutputFile = os.Args[i+1]
+			i++
+		case "--sock", "-s":
+			SockName = os.Args[i+1]
 			i++
 		}
 	}
@@ -313,7 +308,7 @@ func ParseArgs() {
 func main() {
 	ParseArgs()
 	InitKvStore()
-	if UseInteractive {
+	if UseREPL {
 		REPL()
 	} else {
 		ReadFromNetwork()

@@ -3,8 +3,15 @@
 build: phony ## Build main.go into ./dkvg
 	go build -o dkvg main.go
 
-run: phony ## Run main.go
-	go run main.go
+SOCKET ?= /tmp/dkvg.sock
+run: free-socket phony ## Run main.go
+	go run main.go --sock $(SOCKET)
+
+free-socket: phony ## Remove SOCKET if in use.
+	rm $(SOCKET) 2>/dev/null || true
+
+client: phony ## Connect to the Unix domain socket of a dkvg server.
+	nc -U $(SOCKET)
 
 BLUE := $(shell tput setaf 4)
 RESET := $(shell tput sgr0)

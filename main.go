@@ -2,13 +2,26 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"strings"
 )
 
-const PROMPT = "#> "
+const OutputFile = "store.json"
+
+const (
+	PROMPT   = "#> "
+	SetOK    = "OK"
+	EmptyVal = "NULL"
+)
+
+const (
+	PrefixSet = "set "
+	PrefixGet = "get "
+)
 
 var (
 	ErrNotFound   = errors.New("not foundd")
@@ -25,6 +38,16 @@ const (
 )
 
 var kvStore = map[string]string{}
+
+func Persist(store map[string]string) error {
+	var err error
+	serialized, err := json.Marshal(store)
+	if err != nil {
+		return err
+	}
+	err = ioutil.WriteFile(OutputFile, serialized, 0644)
+	return err
+}
 
 func setVal(store map[string]string, key string, val string) error {
 	kvStore[key] = val
@@ -78,8 +101,10 @@ func ParseSet(raw string) (*Cmd, error) {
 }
 
 func KvSet(pair Pair) error {
+	var err error
 	kvStore[pair.Left] = pair.Right
-	return nil
+	err = Persist(kvStore)
+	return err
 }
 
 // ParseGet parses a raw string as a lookup key.
@@ -104,56 +129,69 @@ func KvGet(key string) (string, error) {
 	return val, nil
 }
 
+func DispatchSet(cmd *Cmd) error {
+	pair, ok := cmd.Data.(Pair)
+	if !ok {
+		// invariant: system bug
+		must(fmt.Errorf("expected a pair, got %#v", cmd.Data))
+	}
+
+	return KvSet(pair)
+}
+
+func DispatchGet(cmd *Cmd) (string, error) {
+	k, ok := cmd.Data.(string)
+	if !ok {
+		// invariant: system bug
+		must(fmt.Errorf("expected a string, got %#v", cmd.Data))
+	}
+
+	return KvGet(k)
+}
+
 func Dispatch(cmd *Cmd) error {
+	var err error
 	switch cmd.Type {
 	case CmdQuit:
 		fmt.Fprintf(os.Stderr, "Goodbye\n")
 		os.Exit(0)
 	case CmdSet:
-		pair, ok := cmd.Data.(Pair)
-		if !ok {
-			// invariant: system bug
-			must(fmt.Errorf("expected a pair, got %#v", cmd.Data))
+		if err = DispatchSet(cmd); err != nil {
+			return err
 		}
-
-		KvSet(pair)
-		fmt.Printf("OK\n")
+		fmt.Printf("%s\n", SetOK)
 	case CmdGet:
-		k, ok := cmd.Data.(string)
-		if !ok {
-			// invariant: system bug
-			must(fmt.Errorf("expected a string, got %#v", cmd.Data))
-		}
-
-		val, err := KvGet(k)
+		val, err := DispatchGet(cmd)
 		if err == nil {
 			fmt.Printf("%s\n", val)
 		} else if errors.Is(err, ErrNotFound) {
-			fmt.Printf("NULL\n")
+			fmt.Printf("%s\n", EmptyVal)
 		} else {
 			return err
 		}
 	default:
 		return ErrBadCommand
 	}
+
 	return nil
 }
 
-func Parse(raw string) (*Cmd, error) {
+func ParseRaw(raw string) (*Cmd, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "quit" || raw == "q" {
 		return &Cmd{Type: CmdQuit}, nil
-	} else if strings.HasPrefix(raw, "set ") {
-		return ParseSet(raw[4:])
-	} else if strings.HasPrefix(raw, "get ") {
-		return ParseGet(raw[4:])
+	} else if strings.HasPrefix(raw, PrefixSet) {
+		return ParseSet(strings.TrimPrefix(raw, PrefixSet))
+	} else if strings.HasPrefix(raw, PrefixGet) {
+		return ParseGet(strings.TrimPrefix(raw, PrefixGet))
 	}
 
 	return nil, fmt.Errorf("'%s': %w", raw, ErrBadCommand)
 }
 
-func handleInput(raw string) {
-	cmd, err := Parse(raw)
+func HandleRawInput(raw string) {
+	var err error
+	cmd, err := ParseRaw(raw)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot parse command: %v\n", err)
 		return
@@ -167,13 +205,30 @@ func repl() {
 	scanner := bufio.NewScanner(os.Stdin)
 	Prompt()
 	for scanner.Scan() {
-		handleInput(scanner.Text())
+		HandleRawInput(scanner.Text())
 		Prompt()
 	}
 }
 
+// InitKvStore looks for a file at OutputPath, and creates one if none exists.
+func InitKvStore() {
+	var err error
+	_, err = os.Stat(OutputFile)
+	if errors.Is(err, os.ErrNotExist) {
+		fmt.Printf("Initializing store at %s\n", OutputFile)
+		emptyJSON := []byte{'{', '}'}
+		must(ioutil.WriteFile(OutputFile, emptyJSON, 0644))
+	}
+	fmt.Printf("Loading store from %s\n", OutputFile)
+	f, err := os.Open(OutputFile)
+	must(err)
+	data, err := ioutil.ReadAll(f)
+	must(err)
+	must(json.Unmarshal(data, &kvStore))
+}
+
 func main() {
-	fmt.Printf("Hello, world!\n")
+	InitKvStore()
 	repl()
 }
 

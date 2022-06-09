@@ -5,12 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"net"
 	"os"
 	"strings"
 )
 
-const OutputFile = "store.json"
+var (
+	OutputFile     = "store.json"
+	UseInteractive = false
+	SockName       = "/tmp/dkvg.sock"
+)
 
 const (
 	PROMPT   = "#> "
@@ -60,10 +66,6 @@ func getKey(store map[string]string, key string) (string, error) {
 		return "", fmt.Errorf("%s: %w", key, ErrNotFound)
 	}
 	return val, nil
-}
-
-func Prompt() {
-	fmt.Printf(PROMPT)
 }
 
 type Cmd struct {
@@ -139,7 +141,7 @@ func DispatchSet(cmd *Cmd) error {
 	return KvSet(pair)
 }
 
-func DispatchGet(cmd *Cmd) (string, error) {
+func (d Dispatcher) DispatchGet(cmd *Cmd) (string, error) {
 	k, ok := cmd.Data.(string)
 	if !ok {
 		// invariant: system bug
@@ -149,23 +151,27 @@ func DispatchGet(cmd *Cmd) (string, error) {
 	return KvGet(k)
 }
 
-func Dispatch(cmd *Cmd) error {
+type Dispatcher struct {
+	WriteConfig WriteConfig
+}
+
+func (d Dispatcher) Dispatch(cmd *Cmd) error {
 	var err error
 	switch cmd.Type {
 	case CmdQuit:
-		fmt.Fprintf(os.Stderr, "Goodbye\n")
+		d.WriteConfig.WriteErr("Goodbye\n")
 		os.Exit(0)
 	case CmdSet:
 		if err = DispatchSet(cmd); err != nil {
 			return err
 		}
-		fmt.Printf("%s\n", SetOK)
+		d.WriteConfig.WriteData("%s\n", SetOK)
 	case CmdGet:
-		val, err := DispatchGet(cmd)
+		val, err := d.DispatchGet(cmd)
 		if err == nil {
-			fmt.Printf("%s\n", val)
+			d.WriteConfig.WriteData("%s\n", val)
 		} else if errors.Is(err, ErrNotFound) {
-			fmt.Printf("%s\n", EmptyVal)
+			d.WriteConfig.WriteData("%s\n", EmptyVal)
 		} else {
 			return err
 		}
@@ -178,7 +184,7 @@ func Dispatch(cmd *Cmd) error {
 
 func ParseRaw(raw string) (*Cmd, error) {
 	raw = strings.TrimSpace(raw)
-	if raw == "quit" || raw == "q" {
+	if (raw == "quit" || raw == "q") && UseInteractive {
 		return &Cmd{Type: CmdQuit}, nil
 	} else if strings.HasPrefix(raw, PrefixSet) {
 		return ParseSet(strings.TrimPrefix(raw, PrefixSet))
@@ -189,24 +195,87 @@ func ParseRaw(raw string) (*Cmd, error) {
 	return nil, fmt.Errorf("'%s': %w", raw, ErrBadCommand)
 }
 
-func HandleRawInput(raw string) {
+type WriteConfig struct {
+	WriteData func(string, ...interface{})
+	WriteErr  func(string, ...interface{})
+}
+
+type InputHandler struct {
+	WriteConfig
+}
+
+func (h InputHandler) HandleRawInput(raw string) {
 	var err error
 	cmd, err := ParseRaw(raw)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cannot parse command: %v\n", err)
+		h.WriteErr("cannot parse command: %v\n", err)
 		return
 	}
-	if err = Dispatch(cmd); err != nil {
-		fmt.Fprintf(os.Stderr, "cannot run command: %v", err)
+	d := Dispatcher{WriteConfig: h.WriteConfig}
+	if err = d.Dispatch(cmd); err != nil {
+		h.WriteErr("cannot run command: %v", err)
 	}
 }
 
-func repl() {
+func stdOutWrite(s string, as ...interface{}) {
+	fmt.Fprintf(os.Stdout, s, as...)
+}
+
+func stdErrWrite(s string, as ...interface{}) {
+	fmt.Fprintf(os.Stderr, s, as...)
+}
+
+func REPL() {
 	scanner := bufio.NewScanner(os.Stdin)
-	Prompt()
+	handler := InputHandler{
+		WriteConfig: WriteConfig{
+			WriteData: stdOutWrite,
+			WriteErr:  stdErrWrite,
+		},
+	}
+	fmt.Printf(PROMPT)
 	for scanner.Scan() {
-		HandleRawInput(scanner.Text())
-		Prompt()
+		handler.HandleRawInput(scanner.Text())
+		fmt.Printf(PROMPT)
+	}
+}
+
+func NewSocketWriteConfig(c net.Conn) WriteConfig {
+	return WriteConfig{
+		WriteData: func(s string, args ...interface{}) {
+			c.Write([]byte(fmt.Sprintf(s, args)))
+		},
+		WriteErr: func(s string, args ...interface{}) {
+			c.Write([]byte(fmt.Sprintf(s, args)))
+		},
+	}
+}
+
+func HandleNetworkReceived(c net.Conn) {
+	buf := make([]byte, 1<<9)
+	handler := InputHandler{WriteConfig: NewSocketWriteConfig(c)}
+	for {
+		nr, err := c.Read(buf)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				fmt.Fprintf(os.Stderr, "failed to read network buffer: %v\n", err)
+			}
+			break
+		}
+		handler.HandleRawInput(string(buf[0:nr]))
+	}
+}
+
+func ReadFromNetwork() {
+	var err error
+	l, err := net.Listen("unix", SockName)
+	must(err)
+	fmt.Printf("Listening on %s\n", SockName)
+	for {
+		fd, err := l.Accept()
+		fmt.Fprintf(os.Stderr, "Accepted new connection\n")
+		must(err)
+		go HandleNetworkReceived(fd)
 	}
 }
 
@@ -227,9 +296,28 @@ func InitKvStore() {
 	must(json.Unmarshal(data, &kvStore))
 }
 
+func ParseArgs() {
+	l := len(os.Args)
+	for i := 0; i < l; i++ {
+		arg := os.Args[i]
+		switch arg {
+		case "--interactive", "-i":
+			UseInteractive = true
+		case "--output", "-o":
+			OutputFile = os.Args[i+1]
+			i++
+		}
+	}
+}
+
 func main() {
+	ParseArgs()
 	InitKvStore()
-	repl()
+	if UseInteractive {
+		REPL()
+	} else {
+		ReadFromNetwork()
+	}
 }
 
 func must(err error) {

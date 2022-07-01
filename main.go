@@ -45,7 +45,7 @@ const (
 )
 
 var kvStore = map[string]string{}
-var kvStoreMutex = sync.Mutex{}
+var kvStoreMutex = sync.RWMutex{}
 
 func Persist(store map[string]string) error {
 	var err error
@@ -115,10 +115,12 @@ func ParseGet(raw string) (*Cmd, error) {
 }
 
 func KvGet(key string) (string, error) {
+	kvStoreMutex.RLock()
 	val, ok := kvStore[key]
 	if !ok {
 		return "", ErrNotFound
 	}
+	kvStoreMutex.RUnlock()
 	return val, nil
 }
 

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"dkvg/pkg/data_pipeline"
+	"dkvg/pkg/model"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +11,6 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
-	"strings"
 	"sync"
 )
 
@@ -19,194 +20,28 @@ var (
 	SockName   = "/tmp/dkvg.sock"
 )
 
-const (
-	PROMPT   = "#> "
-	SetOK    = "OK"
-	EmptyVal = "NULL"
-)
-
-const (
-	PrefixSet = "set "
-	PrefixGet = "get "
-)
-
-var (
-	ErrNotFound   = errors.New("not foundd")
-	ErrBadCommand = errors.New("unrecognized command (are you missing arguments?)")
-)
-
-type CmdType int
-
-const (
-	CmdUnknown CmdType = iota
-	CmdQuit
-	CmdGet
-	CmdSet
-)
-
-var kvStore = map[string]string{}
+var kvStore = map[string]interface{}{}
 var kvStoreMutex = sync.RWMutex{}
-
-func Persist(store map[string]string) error {
-	var err error
-	serialized, err := json.Marshal(store)
-	if err != nil {
-		return err
-	}
-	err = ioutil.WriteFile(OutputFile, serialized, 0644)
-	return err
+var Store = model.Store{
+	Store: kvStore,
+	Mutex: &kvStoreMutex,
+	OutputPath: OutputFile,
 }
-
-type Cmd struct {
-	Type CmdType
-	Data interface{}
-}
-
-type Pair struct {
-	Left  string
-	Right string
-}
-
-// ParseSet parses a raw string of the form "key=val" into a Cmd.
-// It strips all leading and trailing whitespace.
-// TODO(cjea): support quoting both keys and vals for string literals.
-func ParseSet(raw string) (*Cmd, error) {
-	parts := strings.SplitN(raw, "=", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf(
-			"malformed set command (must contain one '='): %w",
-			ErrBadCommand,
-		)
-	}
-
-	key := strings.TrimSpace(parts[0])
-	val := strings.TrimSpace(parts[1])
-	if len(key) == 0 || len(val) == 0 {
-		return nil, fmt.Errorf("keys and vals must not be empty: %w", ErrBadCommand)
-	}
-
-	return &Cmd{
-		Type: CmdSet,
-		Data: Pair{key, val},
-	}, nil
-}
-
-func KvSet(pair Pair) error {
-	var err error
-	kvStoreMutex.Lock()
-	kvStore[pair.Left] = pair.Right
-	err = Persist(kvStore)
-	kvStoreMutex.Unlock()
-	return err
-}
-
-// ParseGet parses a raw string as a lookup key.
-// It strips all leading and trailing whitespace.
-// TODO(cjea): support quoting keys for string literals.
-func ParseGet(raw string) (*Cmd, error) {
-	key := strings.TrimSpace(raw)
-	if len(key) == 0 {
-		return nil, fmt.Errorf("key must not be empty: %w", ErrBadCommand)
-	}
-	return &Cmd{
-		Type: CmdGet,
-		Data: key,
-	}, nil
-}
-
-func KvGet(key string) (string, error) {
-	kvStoreMutex.RLock()
-	val, ok := kvStore[key]
-	if !ok {
-		return "", ErrNotFound
-	}
-	kvStoreMutex.RUnlock()
-	return val, nil
-}
-
-func DispatchSet(cmd *Cmd) error {
-	pair, ok := cmd.Data.(Pair)
-	if !ok {
-		// invariant: system bug
-		must(fmt.Errorf("expected a pair, got %#v", cmd.Data))
-	}
-
-	return KvSet(pair)
-}
-
-func (d Dispatcher) DispatchGet(cmd *Cmd) (string, error) {
-	k, ok := cmd.Data.(string)
-	if !ok {
-		// invariant: system bug
-		must(fmt.Errorf("expected a string, got %#v", cmd.Data))
-	}
-
-	return KvGet(k)
-}
-
-type Dispatcher struct {
-	WriteConfig WriteConfig
-}
-
-func (d Dispatcher) Dispatch(cmd *Cmd) error {
-	var err error
-	switch cmd.Type {
-	case CmdQuit:
-		d.WriteConfig.WriteErr("Goodbye\n")
-		os.Exit(0)
-	case CmdSet:
-		if err = DispatchSet(cmd); err != nil {
-			return err
-		}
-		d.WriteConfig.WriteData("%s\n", SetOK)
-	case CmdGet:
-		val, err := d.DispatchGet(cmd)
-		if err == nil {
-			d.WriteConfig.WriteData("%s\n", val)
-		} else if errors.Is(err, ErrNotFound) {
-			d.WriteConfig.WriteData("%s\n", EmptyVal)
-		} else {
-			return err
-		}
-	default:
-		return ErrBadCommand
-	}
-
-	return nil
-}
-
-func ParseRaw(raw string) (*Cmd, error) {
-	raw = strings.TrimSpace(raw)
-	if (raw == "quit" || raw == "q") && UseREPL {
-		return &Cmd{Type: CmdQuit}, nil
-	} else if strings.HasPrefix(raw, PrefixSet) {
-		return ParseSet(strings.TrimPrefix(raw, PrefixSet))
-	} else if strings.HasPrefix(raw, PrefixGet) {
-		return ParseGet(strings.TrimPrefix(raw, PrefixGet))
-	}
-
-	return nil, fmt.Errorf("'%s': %w", raw, ErrBadCommand)
-}
-
-type WriteConfig struct {
-	WriteData func(string, ...interface{})
-	WriteErr  func(string, ...interface{})
-}
-
 type InputHandler struct {
-	WriteConfig
+	model.WriteConfig
 }
 
 func (h InputHandler) HandleRawInput(raw string) {
-	var err error
-	cmd, err := ParseRaw(raw)
-	if err != nil {
-		h.WriteErr("cannot parse command: %v\n", err)
-		return
-	}
-	d := Dispatcher{WriteConfig: h.WriteConfig}
-	if err = d.Dispatch(cmd); err != nil {
-		h.WriteErr("cannot run command: %v", err)
+	res := data_pipeline.Process(&Store, raw)
+	switch res.Status {
+	case model.StatusResultFailed:
+		h.WriteErr(res.Message+"\n")
+	case model.StatusGetNoFound:
+		h.WriteOut(model.NullDisplay+"\n")
+	case model.StatusSetSuccess:
+		h.WriteOut(model.SetOK+"\n")
+	default:
+		h.WriteOut(res.Message+"\n")
 	}
 }
 
@@ -221,21 +56,21 @@ func stdErrWrite(s string, as ...interface{}) {
 func REPL() {
 	scanner := bufio.NewScanner(os.Stdin)
 	handler := InputHandler{
-		WriteConfig: WriteConfig{
-			WriteData: stdOutWrite,
+		WriteConfig: model.WriteConfig{
+			WriteOut: stdOutWrite,
 			WriteErr:  stdErrWrite,
 		},
 	}
-	fmt.Printf(PROMPT)
+	fmt.Printf(model.PROMPT)
 	for scanner.Scan() {
 		handler.HandleRawInput(scanner.Text())
-		fmt.Printf(PROMPT)
+		fmt.Printf(model.PROMPT)
 	}
 }
 
-func NewSocketWriteConfig(c net.Conn) WriteConfig {
-	return WriteConfig{
-		WriteData: func(s string, args ...interface{}) {
+func NewSocketWriteConfig(c net.Conn) model.WriteConfig {
+	return model.WriteConfig{
+		WriteOut: func(s string, args ...interface{}) {
 			c.Write([]byte(fmt.Sprintf(s, args...)))
 		},
 		WriteErr: func(s string, args ...interface{}) {
@@ -248,7 +83,7 @@ func HandleNetworkReceived(c net.Conn) {
 	buf := make([]byte, 1<<9)
 	handler := InputHandler{WriteConfig: NewSocketWriteConfig(c)}
 	for {
-		handler.WriteConfig.WriteErr(PROMPT)
+		handler.WriteConfig.WriteErr(model.PROMPT)
 		nr, err := c.Read(buf)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {

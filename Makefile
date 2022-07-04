@@ -12,7 +12,7 @@ free-socket: phony ## Remove SOCKET if in use.
 	rm $(SOCKET) 2>/dev/null || true
 
 client: phony ## Connect to the Unix domain socket of a dkvg server.
-	nc -U $(SOCKET)
+	rlwrap nc -U $(SOCKET)
 
 BLUE := $(shell tput setaf 4)
 RESET := $(shell tput sgr0)

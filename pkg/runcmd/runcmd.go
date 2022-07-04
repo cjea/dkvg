@@ -18,7 +18,6 @@ func Persist(store *model.Store, outputPath string) error {
 	return err
 }
 
-
 func KvSet(pair model.Pair, store *model.Store) error {
 	var err error
 	store.Mutex.Lock()

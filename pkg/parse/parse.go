@@ -6,6 +6,16 @@ import (
 	"strings"
 )
 
+func ParseSync(raw string) (*model.Cmd, error) {
+	if raw != "sync" {
+		return nil, fmt.Errorf("sync does not take args in '%s': %w", raw, model.ErrBadCommand)
+	}
+	return &model.Cmd{
+		Type: model.CmdSync,
+		Data: "",
+	}, nil
+}
+
 // ParseGetRaw parses a raw string as a lookup key.
 // It strips all leading and trailing whitespace.
 // TODO(cjea): support quoting keys for string literals.
@@ -51,7 +61,10 @@ func Parse(raw string) (*model.Cmd, error) {
 		return ParseSetRaw(strings.TrimPrefix(raw, model.PrefixSet))
 	} else if strings.HasPrefix(raw, model.PrefixGet) {
 		return ParseGetRaw(strings.TrimPrefix(raw, model.PrefixGet))
+	} else if strings.HasPrefix(raw, model.PrefixSync) {
+		return ParseSync(raw)
 	}
+
 
 	return nil, fmt.Errorf("'%s': %w", raw, model.ErrBadCommand)
 }

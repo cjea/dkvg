@@ -8,6 +8,7 @@ import (
 const (
 	PrefixSet = "set "
 	PrefixGet = "get "
+	PrefixSync = "sync"
 )
 
 var (
@@ -19,6 +20,7 @@ const (
 	StatusSetSuccess
 	StatusGetSuccess
 	StatusGetNoFound
+	StatusSyncSuccess
 )
 
 type Result struct {Status byte; Message string}
@@ -35,6 +37,7 @@ const (
 	CmdUnknown CmdType = iota
 	CmdGet
 	CmdSet
+	CmdSync
 )
 
 type Cmd struct {

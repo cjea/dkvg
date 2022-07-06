@@ -6,6 +6,7 @@ import (
 	"dkvg/pkg/data_pipeline"
 	"dkvg/pkg/model"
 	"dkvg/pkg/store"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,16 +21,23 @@ type InputHandler struct {
 }
 
 func (h InputHandler) HandleRawInput(raw string) {
+	 debugStore := func() string {
+		buf, err := json.Marshal(h.Store.Store)
+		must(err)
+		return string(buf)
+	 }
 	res := data_pipeline.Process(h.Store, raw)
 	switch res.Status {
 	case model.StatusResultFailed:
-		h.WriteErr(res.Message+"\n")
+		h.WriteErr(res.Message+"\n"+fmt.Sprintf("\n***STORE\n%s\n", debugStore()))
 	case model.StatusGetNoFound:
-		h.WriteOut(model.NullDisplay+"\n")
+		h.WriteOut(model.NullDisplay+"\n"+fmt.Sprintf("\n***STORE\n%s\n", debugStore()))
 	case model.StatusSetSuccess:
-		h.WriteOut(model.SetOK+"\n")
+		h.WriteOut(model.SetOK+"\n"+debugStore())
+	case model.StatusSyncSuccess:
+		h.WriteOut(debugStore()+"\n")
 	default:
-		h.WriteOut(res.Message+"\n")
+		h.WriteOut(res.Message+"\n"+(fmt.Sprintf("\n***STORE\n%s\n", debugStore())))
 	}
 }
 

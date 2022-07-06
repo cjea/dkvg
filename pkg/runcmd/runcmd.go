@@ -6,25 +6,34 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"os"
 )
 
 func Persist(store *model.Store, outputPath string) error {
 	var err error
-	serialized, err := json.Marshal(store)
+	serialized, err := json.Marshal(store.Store)
 	if err != nil {
 		return err
 	}
-	err = ioutil.WriteFile(outputPath, serialized, 0644)
-	return err
+	if _, err = os.Stat(outputPath); err != nil {
+		return fmt.Errorf("failed to set: %w", err)
+	}
+	if err = ioutil.WriteFile(outputPath, serialized, 0644); err != nil {
+		return err
+	}
+	return nil
 }
 
 func KvSet(pair model.Pair, store *model.Store) error {
 	var err error
 	store.Mutex.Lock()
 	defer store.Mutex.Unlock()
+
+	if err = Persist(store, store.OutputPath); err != nil {
+		return err
+	}
 	store.Store[pair.Left] = pair.Right
-	err = Persist(store, store.OutputPath)
-	return err
+	return nil
 }
 
 func KvGet(key string, store *model.Store) (string, error) {
@@ -40,6 +49,24 @@ func KvGet(key string, store *model.Store) (string, error) {
 	}
 	return str, nil
 }
+
+func KvSync(store *model.Store) error {
+	var err error
+	r, err := os.Open(store.OutputPath)
+	if err != nil {
+		return err
+	}
+	buf, err := ioutil.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	if err = json.Unmarshal(buf, &store.Store); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 
 func DispatchSet(cmd *model.Cmd, store *model.Store) error {
 	pair, ok := cmd.Data.(model.Pair)
@@ -60,11 +87,21 @@ func DispatchGet(cmd *model.Cmd, store *model.Store) (string, error) {
 	return KvGet(k, store)
 }
 
+func DispatchSync(store *model.Store) error {
+	return KvSync(store)
+}
+
+
 func RunCmd(cmd *model.Cmd, store *model.Store) (model.Result, error) {
 	var err error
 	fail := func(err error) (model.Result, error) { return model.Result{}, err }
 
 	switch cmd.Type {
+	case model.CmdSync:
+		if err = DispatchSync(store); err != nil {
+			return fail(err)
+		}
+		return model.Result{Status: model.StatusSyncSuccess}, nil
 	case model.CmdSet:
 		if err = DispatchSet(cmd, store); err != nil {
 			return fail(err)

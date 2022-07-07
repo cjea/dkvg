@@ -8,6 +8,7 @@ import (
 type Config struct {
 	UseREPL    bool
 	OutputFile string
+	WALPath string
 	SockName   string
 }
 
@@ -15,6 +16,7 @@ func NewDefaultConfig() *Config {
 	return &Config{
 		UseREPL:    false,
 		OutputFile: "store.json",
+		WALPath: "wal.log",
 		SockName: "/tmp/dkvg.sock",
 	}
 }

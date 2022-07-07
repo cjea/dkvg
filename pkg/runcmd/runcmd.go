@@ -9,29 +9,25 @@ import (
 	"os"
 )
 
-func Persist(store *model.Store, outputPath string) error {
-	var err error
-	serialized, err := json.Marshal(store.Store)
-	if err != nil {
-		return err
-	}
-	if _, err = os.Stat(outputPath); err != nil {
-		return fmt.Errorf("failed to set: %w", err)
-	}
-	if err = ioutil.WriteFile(outputPath, serialized, 0644); err != nil {
-		return err
-	}
-	return nil
+type Appender interface{
+	Append(*model.Cmd) error
 }
 
-func KvSet(pair model.Pair, store *model.Store) error {
+func Persist(cmd *model.Cmd, a Appender) error {
 	var err error
+	err = a.Append(cmd)
+	return err
+}
+
+func KvSet(cmd *model.Cmd, store *model.Store) error {
 	store.Mutex.Lock()
 	defer store.Mutex.Unlock()
 
-	if err = Persist(store, store.OutputPath); err != nil {
-		return err
+	pair, ok := cmd.Data.(model.Pair)
+	if !ok {
+		return fmt.Errorf("invariant: expected a pair, got %#v", cmd.Data)
 	}
+
 	store.Store[pair.Left] = pair.Right
 	return nil
 }
@@ -68,13 +64,13 @@ func KvSync(store *model.Store) error {
 }
 
 
-func DispatchSet(cmd *model.Cmd, store *model.Store) error {
-	pair, ok := cmd.Data.(model.Pair)
-	if !ok {
-		return fmt.Errorf("invariant: expected a pair, got %#v", cmd.Data)
+func DispatchSet(cmd *model.Cmd, store *model.Store, a Appender) error {
+	var err error
+	err = Persist(cmd, a)
+	if err != nil {
+		return err
 	}
-
-	return KvSet(pair, store)
+	return KvSet(cmd, store)
 }
 
 func DispatchGet(cmd *model.Cmd, store *model.Store) (string, error) {
@@ -91,8 +87,7 @@ func DispatchSync(store *model.Store) error {
 	return KvSync(store)
 }
 
-
-func RunCmd(cmd *model.Cmd, store *model.Store) (model.Result, error) {
+func RunCmd(cmd *model.Cmd, store *model.Store, a Appender) (model.Result, error) {
 	var err error
 	fail := func(err error) (model.Result, error) { return model.Result{}, err }
 
@@ -103,7 +98,7 @@ func RunCmd(cmd *model.Cmd, store *model.Store) (model.Result, error) {
 		}
 		return model.Result{Status: model.StatusSyncSuccess}, nil
 	case model.CmdSet:
-		if err = DispatchSet(cmd, store); err != nil {
+		if err = DispatchSet(cmd, store, a); err != nil {
 			return fail(err)
 		}
 		return model.Result{Status: model.StatusSetSuccess }, nil

@@ -23,6 +23,8 @@ const (
 	StatusSyncSuccess
 )
 
+const WALMagicNumber = 0x33AA33AA
+
 type Result struct {Status byte; Message string}
 
 type Store struct {

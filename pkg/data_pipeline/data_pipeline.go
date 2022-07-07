@@ -10,7 +10,7 @@ const (
 	FAIL_STATUS = iota + 2
 )
 
-func Process(store *model.Store, input string) model.Result {
+func Process(store *model.Store, input string, a runcmd.Appender) model.Result {
 	var err error
 	fail := func(err error) model.Result {
 		return model.Result{Status: model.StatusResultFailed, Message: err.Error()}
@@ -20,7 +20,7 @@ func Process(store *model.Store, input string) model.Result {
 	if err != nil {
 		return fail(err)
 	}
-	res, err := runcmd.RunCmd(cmd, store)
+	res, err := runcmd.RunCmd(cmd, store, a)
 	if err != nil {
 		return fail(err)
 	}

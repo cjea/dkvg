@@ -16,6 +16,16 @@ func ParseSync(raw string) (*model.Cmd, error) {
 	}, nil
 }
 
+func ParseSnapshot(raw string) (*model.Cmd, error) {
+	if raw != "snapshot" {
+		return nil, fmt.Errorf("snapshot does not take args in '%s': %w", raw, model.ErrBadCommand)
+	}
+	return &model.Cmd{
+		Type: model.CmdSnapshot,
+		Data: "",
+	}, nil
+}
+
 // ParseGetRaw parses a raw string as a lookup key.
 // It strips all leading and trailing whitespace.
 // TODO(cjea): support quoting keys for string literals.
@@ -63,6 +73,8 @@ func Parse(raw string) (*model.Cmd, error) {
 		return ParseGetRaw(strings.TrimPrefix(raw, model.PrefixGet))
 	} else if strings.HasPrefix(raw, model.PrefixSync) {
 		return ParseSync(raw)
+	} else if strings.HasPrefix(raw, model.PrefixSnapshot) {
+		return ParseSnapshot(raw)
 	}
 
 

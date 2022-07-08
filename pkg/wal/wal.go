@@ -3,29 +3,49 @@ package wal
 import (
 	"dkvg/pkg/model"
 	"dkvg/pkg/runcmd"
-	"encoding/json"
 	"fmt"
+	"io/fs"
 	"io/ioutil"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"unsafe"
 )
 
+
 type WALPath string
 
 type WAL struct {
-	// GlobalVersion tracks the highest numbered Cmd in the WAL.
-	GlobalVersion uint64
-	Cmds []*model.Cmd
+	Cmds []*model.WALCmd
 	Path string
 	FileHandle *os.File
 	Mutex *sync.RWMutex
+	offset uint64
+}
+
+func (w *WAL) SetOffset(o uint64) {
+	w.offset = o
+}
+
+func (w *WAL) GlobalVersion() uint64 {
+	if len(w.Cmds) == 0 {
+		return 0
+	}
+	return w.Cmds[len(w.Cmds) - 1].GlobalVersion
+}
+
+func (w *WAL) NextGlobalVersion() uint64 {
+	ret := w.GlobalVersion() + 1
+	if w.IsEmpty() {
+		ret += w.offset
+	}
+	return ret
 }
 
 type SnapshotHandle struct {
-	path string
-	cache map[string]interface{}
+	FullPath string
+	FileInfo fs.FileInfo
 }
 
 func SerializeCmdForWAL(c *model.Cmd) []byte {
@@ -37,53 +57,81 @@ func SerializeCmdForWAL(c *model.Cmd) []byte {
 	valLen := uint16(len(p.Right))
 	keyLenBytes := *(*[2]byte)(unsafe.Pointer(&keyLen))
 	valLenBytes := *(*[2]byte)(unsafe.Pointer(&valLen))
-
-	// 2 for key length and 2 for val length. Calling code should append the
-	// global version.
-	fullSize := 4 + len(p.Left) + len(p.Right)
-	res := make([]byte, fullSize)
 	parts := [][]byte{
 		keyLenBytes[:],
 		valLenBytes[:],
 		[]byte(p.Left),
 		[]byte(p.Right),
 	}
+
+	// 2 for key length and 2 for val length. Not responsible for appending the
+	// global version to the end of the record.
+	fullSize := 4 + len(p.Left) + len(p.Right)
+	res := make([]byte, fullSize)
 	i := 0
-	for _, sl := range parts {
-		i += copy(res[i:], sl)
+	for _, part := range parts {
+		i += copy(res[i:], part)
 	}
 	return res
 }
 
-func (h *SnapshotHandle) Parse() (map[string]interface{}, error) {
-	if h.cache != nil {
-		return h.cache, nil
+type byModTime []fs.FileInfo
+func (s byModTime) Len() int {
+	return len(s)
+}
+func (s byModTime) Swap(i, j int) {
+		s[i], s[j] = s[j], s[i]
+}
+func (s byModTime) Less(i, j int) bool {
+	return s[i].ModTime().Before(s[j].ModTime())
+}
+
+// NewestSnapshot only returns an error for exceptions. If there are simply
+// no snapshots in the snapshot/ directory, then this func returns (nil, nil).
+func NewestSnapshot() (*SnapshotHandle, error) {
+	infos, err := ListAllSnapshots()
+	if err != nil {
+		return nil, err
+	}
+	if len(infos) == 0 {
+		return nil, nil
+	}
+	info := infos[len(infos) - 1]
+	h := &SnapshotHandle{
+		FullPath: fmt.Sprintf("snapshot/%s", info.Name()),
+		FileInfo: info,
 	}
 
+	return h, nil
+}
+
+// ListAllSnapshots returns all *.snapshot files in the snapshot directory,
+// sorted by mod-time. Last element is the newest file.
+func ListAllSnapshots() ([]fs.FileInfo, error) {
 	var err error
-	r, err := os.Open(h.path)
+	entries, err := os.ReadDir("snapshot")
 	if err != nil {
 		return nil, err
 	}
-	bytes, err := ioutil.ReadAll(r)
-	if err != nil {
-		return nil, err
+	snapshots := make(byModTime, 0)
+	for _, entry := range entries {
+		n := entry.Name()
+		if !strings.HasSuffix(n, ".snapshot") {
+			continue
+		}
+		info, err := os.Stat("snapshot/"+n)
+		if err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, info)
 	}
-	m := map[string]interface{}{}
-	err = json.Unmarshal(bytes, &m)
-	if err != nil {
-		return nil, err
-	}
-	h.cache = m
-	return h.cache, nil
+	sort.Sort(snapshots)
+
+	return snapshots, nil
 }
 
-func GetCurrentWAL() *WAL {
-	panic("not implemented: GetCurrentWAL")
-}
-
-func Snapshot (*model.Store, *WAL, WALPath) SnapshotHandle {
-	panic("not implemented: Snapshot")
+func GetCurrentWAL() (*WAL, error) {
+	return ParseWAL("wal.log")
 }
 
 func NewWAL(path string) (*WAL, error) {
@@ -103,8 +151,7 @@ func NewWAL(path string) (*WAL, error) {
 		return nil, err
 	}
 	return &WAL{
-		Cmds: []*model.Cmd{},
-		GlobalVersion: 0,
+		Cmds: []*model.WALCmd{},
 		Path: path,
 		FileHandle: rw,
 		Mutex: &sync.RWMutex{},
@@ -119,56 +166,57 @@ func ParseWAL (path string) (*WAL, error) {
 		return NewWAL(path)
 	}
 	rw, err := os.OpenFile(string(path), os.O_RDWR, 0644)
-	bytes, err := ioutil.ReadAll(rw)
+	serializedWAL, err := ioutil.ReadAll(rw)
 	if err != nil {
 		return nil, err
 	}
-	if len(bytes) == 0 {
+	if len(serializedWAL) == 0 {
 		return nil, fmt.Errorf("WAL is empty")
 	}
-	checksum := *(*int32)(unsafe.Pointer(&bytes[0]))
+	checksum := *(*int32)(unsafe.Pointer(&serializedWAL[0]))
 	if checksum != model.WALMagicNumber {
 		return nil, fmt.Errorf("WAL is corrupt")
 	}
-	version := *(*uint64)(unsafe.Pointer(&bytes[4]))
 	wal := WAL{
-		Cmds: []*model.Cmd{},
-		GlobalVersion: version,
+		Cmds: []*model.WALCmd{},
 		Path: path,
 		Mutex: &sync.RWMutex{},
 		FileHandle: rw,
+		offset: 0,
 	}
+	highestVersion := uint64(0)
 	// Add 4 for the magic number, 8 for the uint64 version.
 	idx := 4 + 8
-	for idx < len(bytes) {
-		keyLen := *(*uint16)(unsafe.Pointer(&bytes[idx]))
+	for idx < len(serializedWAL) {
+		keyLen := *(*uint16)(unsafe.Pointer(&serializedWAL[idx]))
 		idx = idx + 2
-		valLen := *(*uint16)(unsafe.Pointer(&bytes[idx]))
+		valLen := *(*uint16)(unsafe.Pointer(&serializedWAL[idx]))
 		idx = idx + 2
 		lastKeyByte := idx + int(keyLen) - 1
 		lastValByte := lastKeyByte + int(valLen)
 		key := strings.Builder{}
 		for ; idx <= lastKeyByte; idx += 1 {
-			key.WriteByte(bytes[idx])
+			key.WriteByte(serializedWAL[idx])
 		}
 		val := strings.Builder{}
 		for ; idx <= lastValByte; idx += 1 {
-			val.WriteByte(bytes[idx])
+			val.WriteByte(serializedWAL[idx])
 		}
 		cmd := &model.Cmd{
 			Type: model.CmdSet,
 			Data: model.Pair{Left: key.String(), Right: val.String()},
 		}
-		wal.Cmds = append(wal.Cmds, cmd)
-		globalVersion := *(*uint64)(unsafe.Pointer(&bytes[idx]))
+
+		globalVersion := *(*uint64)(unsafe.Pointer(&serializedWAL[idx]))
 		idx = idx + 8
-		if globalVersion <= wal.GlobalVersion {
+		if globalVersion <= highestVersion {
 			return nil, fmt.Errorf(
 				"global version in '%s' must not decrease from %#v to %v (index=%v)",
 				path, wal, globalVersion, idx,
 			)
 		}
-		wal.GlobalVersion = globalVersion
+		wal.Cmds = append(wal.Cmds, &model.WALCmd{Cmd: cmd, GlobalVersion: globalVersion})
+		highestVersion = globalVersion
 	}
 	return &wal, nil
 }
@@ -177,7 +225,8 @@ func (w *WAL) Append(c *model.Cmd) error {
 	var err error
 	bytes := SerializeCmdForWAL(c)
 	entryLen := len(bytes) + 8
-	v := w.GlobalVersion + 1
+	v := w.NextGlobalVersion()
+	fmt.Printf("about to append command version=%d\n", v)
 	globalVersion := *(*[8]byte)(unsafe.Pointer(&v))
 
 	w.Mutex.Lock()
@@ -196,32 +245,38 @@ func (w *WAL) Append(c *model.Cmd) error {
 	if _, err := w.FileHandle.Write(entry); err != nil {
 		return err
 	}
-	w.Cmds = append(w.Cmds, c)
-	w.GlobalVersion = v
+	w.Cmds = append(w.Cmds, &model.WALCmd{Cmd: c, GlobalVersion: v})
 	return nil
 }
 
-func BuildStore(h *SnapshotHandle, wal *WAL, s *model.Store) error {
-	init := map[string]interface{}{}
-	if h != nil {
-		data, err := h.Parse()
-		if err != nil {
-			return err
-		}
-		init = data
-	}
-	s.Store = init
+func (w *WAL) IsEmpty() bool {
+	return len(w.Cmds) == 0
+}
+
+func BuildStore(wal *WAL, s *model.Store) error {
 	wal.Mutex.RLock()
 	defer wal.Mutex.RUnlock()
 
+	if wal.IsEmpty() {
+		fmt.Printf("Setting initial global version = %d\n", s.GlobalVersion)
+		wal.SetOffset(s.GlobalVersion)
+	}
+
 	for _, cm := range wal.Cmds {
-		err := runcmd.KvSet(cm, s)
+		if cm.GlobalVersion <= s.GlobalVersion {
+			fmt.Printf(
+				"Skipping command %#v\n , which is less than store version %d\n",
+				cm.GlobalVersion, s.GlobalVersion,
+			)
+			continue
+		}
+		err := runcmd.KvSet(cm.Cmd, s)
 		if err != nil {
 			return fmt.Errorf(
 				"command in WAL failed: cmd = %#v\n, sote = %#v", cm, s.Store,
 			)
 		}
-
+		s.GlobalVersion = cm.GlobalVersion
 	}
 	return nil
 }

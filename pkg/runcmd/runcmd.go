@@ -2,6 +2,7 @@ package runcmd
 
 import (
 	"dkvg/pkg/model"
+	"dkvg/pkg/shot"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,11 +10,12 @@ import (
 	"os"
 )
 
-type Appender interface{
+type OrderedAppender interface{
 	Append(*model.Cmd) error
+	GlobalVersion() uint64
 }
 
-func Persist(cmd *model.Cmd, a Appender) error {
+func AppendCmd(cmd *model.Cmd, a OrderedAppender) error {
 	var err error
 	err = a.Append(cmd)
 	return err
@@ -64,12 +66,13 @@ func KvSync(store *model.Store) error {
 }
 
 
-func DispatchSet(cmd *model.Cmd, store *model.Store, a Appender) error {
+func DispatchSet(cmd *model.Cmd, store *model.Store, a OrderedAppender) error {
 	var err error
-	err = Persist(cmd, a)
+	err = AppendCmd(cmd, a)
 	if err != nil {
 		return err
 	}
+	store.GlobalVersion = a.GlobalVersion()
 	return KvSet(cmd, store)
 }
 
@@ -83,11 +86,15 @@ func DispatchGet(cmd *model.Cmd, store *model.Store) (string, error) {
 	return KvGet(k, store)
 }
 
+func DispatchSnapshot(store *model.Store) error {
+	return shot.Snapshot(store)
+}
+
 func DispatchSync(store *model.Store) error {
 	return KvSync(store)
 }
 
-func RunCmd(cmd *model.Cmd, store *model.Store, a Appender) (model.Result, error) {
+func RunCmd(cmd *model.Cmd, store *model.Store, a OrderedAppender) (model.Result, error) {
 	var err error
 	fail := func(err error) (model.Result, error) { return model.Result{}, err }
 
@@ -111,6 +118,11 @@ func RunCmd(cmd *model.Cmd, store *model.Store, a Appender) (model.Result, error
 		} else {
 			return fail(err)
 		}
+	case model.CmdSnapshot:
+		if err = DispatchSnapshot(store); err != nil {
+			return fail(err)
+		}
+		return model.Result{Status: model.StatusSnapshotSuccess}, nil
 	default:
 		return fail(model.ErrBadCommand)
 	}

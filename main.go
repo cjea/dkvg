@@ -5,6 +5,7 @@ import (
 	"dkvg/pkg/config"
 	"dkvg/pkg/data_pipeline"
 	"dkvg/pkg/model"
+	"dkvg/pkg/shot"
 	"dkvg/pkg/wal"
 	"encoding/json"
 	"errors"
@@ -26,7 +27,7 @@ func (h InputHandler) HandleRawInput(raw string) {
 	 debugStore := func() string {
 		buf, err := json.Marshal(h.Store.Store)
 		must(err)
-		return fmt.Sprintf("VERSION %d\n%s\n", h.WAL.GlobalVersion, string(buf))
+		return fmt.Sprintf("VERSION %d\n%s\n", h.Store.GlobalVersion, string(buf))
 	 }
 	res := data_pipeline.Process(h.Store, raw, h.WAL)
 	switch res.Status {
@@ -38,6 +39,8 @@ func (h InputHandler) HandleRawInput(raw string) {
 		h.WriteOut(model.SetOK+"\n"+debugStore())
 	case model.StatusSyncSuccess:
 		h.WriteOut(debugStore()+"\n")
+	case model.StatusSnapshotSuccess:
+		h.WriteOut("Persisted snapshot"+"\n"+debugStore()+"\n")
 	default:
 		h.WriteOut(res.Message+"\n"+(fmt.Sprintf("\n***STORE\n%s\n", debugStore())))
 	}
@@ -109,39 +112,42 @@ func ListenUnixSocket(cfg *config.Config, s *model.Store, w *wal.WAL) {
 	}
 }
 
-func main2() {
-	var err error
-	w, err := wal.ParseWAL("wal.log")
-	must(err)
-	c := &model.Cmd{
-		Type: model.CmdSet,
-		Data: model.Pair{Left: "foo", Right: "the foo-iest"},
-	}
-	c2 := &model.Cmd{
-		Type: model.CmdSet,
-		Data: model.Pair{Left: "bar", Right: "such bar-ness"},
-	}
-	// bytes := wal.SerializeCmdForWAL(c)
-	// fmt.Printf("entry bytes: %v\n", bytes)
-	must(w.Append(c))
-	must(w.Append(c2))
-	fmt.Printf("WAL after update: %#v\n", w)
-}
+// func main() {
+// 	r, err := os.Open("snapshot/1657249158_store.snapshot")
+// 	must(err)
+// 	raw, err := ioutil.ReadAll(r)
+// 	must(err)
+// 	version, data, err := shot.ParseSnapshot(raw)
+// 	must(err)
+// 	fmt.Printf("parsed version=%v\ndata=%v\n", version, data)
+// }
 
 func main() {
+	run()
+}
+
+func run() {
 	cfg := config.NewDefaultConfig()
 	cfg.ParseArgs(os.Args[1:])
 	s := &model.Store{
+		Store: nil,
+		GlobalVersion: 0,
 		Mutex: &sync.RWMutex{},
 		OutputPath: cfg.OutputFile,
-		Store: nil,
 	}
 
+	h, err := wal.NewestSnapshot()
+	must(err)
+	if h != nil {
+		v, data, err := shot.ReadSnapshot(h.FullPath)
+		must(err)
+		s.GlobalVersion = v
+		s.Store = data
+	}
 	w, err := wal.ParseWAL(cfg.WALPath)
 	must(err)
 
-	must(wal.BuildStore(nil, w, s))
-	fmt.Printf("Initial store: %#v\n", s.Store)
+	must(wal.BuildStore(w, s))
 
 	if cfg.UseREPL {
 		REPL(cfg, s, w)

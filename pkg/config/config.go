@@ -6,17 +6,15 @@ import (
 )
 
 type Config struct {
-	UseREPL    bool
-	OutputFile string
-	WALPath string
-	SockName   string
+	UseREPL  bool
+	WALPath  string
+	SockName string
 }
 
 func NewDefaultConfig() *Config {
 	return &Config{
-		UseREPL:    false,
-		OutputFile: "store.json",
-		WALPath: "wal.log",
+		UseREPL:  false,
+		WALPath:  "wal.log",
 		SockName: "/tmp/dkvg.sock",
 	}
 }
@@ -30,10 +28,6 @@ func (cfg *Config) ParseArgs(args []string) {
 			Usage(0)
 		case "--repl":
 			cfg.UseREPL = true
-		case "--output", "-o":
-			cfg.OutputFile = args[i+1]
-			fmt.Printf("Setting output file: %s\n", cfg.OutputFile)
-			i++
 		case "--sock", "-s":
 			cfg.SockName = args[i+1]
 			fmt.Printf("Setting socket name: %s\n", cfg.SockName)
@@ -45,6 +39,6 @@ func (cfg *Config) ParseArgs(args []string) {
 }
 
 func Usage(ec int) {
-	fmt.Printf("Usage: $0 [ --output path/to/output.json ] [ --sock /path/to/sock.sock ] [ --repl ] [ --help ]\n")
+	fmt.Printf("Usage: $0 [ --sock /path/to/sock.sock ] [ --repl ] [ --help ]\n")
 	os.Exit(ec)
 }

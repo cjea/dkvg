@@ -17,7 +17,7 @@ func SerializeStore(s *model.Store) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]byte, len(data) + 8)
+	out := make([]byte, len(data)+8)
 	versionBytes := *(*[8]byte)(unsafe.Pointer(&s.GlobalVersion))
 	copy(out, versionBytes[:])
 	copy(out[8:], data)

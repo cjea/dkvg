@@ -6,9 +6,8 @@ import (
 )
 
 const (
-	PrefixSet = "set "
-	PrefixGet = "get "
-	PrefixSync = "sync"
+	PrefixSet      = "set "
+	PrefixGet      = "get "
 	PrefixSnapshot = "snapshot"
 )
 
@@ -22,21 +21,23 @@ const (
 	StatusSetSuccess
 	StatusGetSuccess
 	StatusGetNoFound
-	StatusSyncSuccess
 	StatusSnapshotSuccess
 )
 
 const WALMagicNumber = 0x33AA33AA
 
-type Result struct {Status byte; Message string}
+type Result struct {
+	Status  byte
+	Message string
+}
 
 const (
 	GlobalVersionKey = "_GLOBAL_VERSION"
 )
+
 type Store struct {
-	Store map[string]interface{}
-	Mutex *sync.RWMutex
-	OutputPath string
+	Store         map[string]interface{}
+	Mutex         *sync.RWMutex
 	GlobalVersion uint64
 }
 
@@ -46,7 +47,6 @@ const (
 	CmdUnknown CmdType = iota
 	CmdGet
 	CmdSet
-	CmdSync
 	CmdSnapshot
 )
 
@@ -67,11 +67,11 @@ type Pair struct {
 
 type WriteConfig struct {
 	WriteOut func(string, ...interface{})
-	WriteErr  func(string, ...interface{})
+	WriteErr func(string, ...interface{})
 }
 
 const (
-	PROMPT   = "#> "
-	SetOK    = "OK"
+	PROMPT      = "#> "
+	SetOK       = "OK"
 	NullDisplay = "NULL"
 )

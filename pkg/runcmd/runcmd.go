@@ -3,14 +3,11 @@ package runcmd
 import (
 	"dkvg/pkg/model"
 	"dkvg/pkg/shot"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
-	"os"
 )
 
-type OrderedAppender interface{
+type OrderedAppender interface {
 	Append(*model.Cmd) error
 	GlobalVersion() uint64
 }
@@ -48,24 +45,6 @@ func KvGet(key string, store *model.Store) (string, error) {
 	return str, nil
 }
 
-func KvSync(store *model.Store) error {
-	var err error
-	r, err := os.Open(store.OutputPath)
-	if err != nil {
-		return err
-	}
-	buf, err := ioutil.ReadAll(r)
-	if err != nil {
-		return err
-	}
-	if err = json.Unmarshal(buf, &store.Store); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-
 func DispatchSet(cmd *model.Cmd, store *model.Store, a OrderedAppender) error {
 	var err error
 	err = AppendCmd(cmd, a)
@@ -90,25 +69,16 @@ func DispatchSnapshot(store *model.Store) error {
 	return shot.Snapshot(store)
 }
 
-func DispatchSync(store *model.Store) error {
-	return KvSync(store)
-}
-
 func RunCmd(cmd *model.Cmd, store *model.Store, a OrderedAppender) (model.Result, error) {
 	var err error
 	fail := func(err error) (model.Result, error) { return model.Result{}, err }
 
 	switch cmd.Type {
-	case model.CmdSync:
-		if err = DispatchSync(store); err != nil {
-			return fail(err)
-		}
-		return model.Result{Status: model.StatusSyncSuccess}, nil
 	case model.CmdSet:
 		if err = DispatchSet(cmd, store, a); err != nil {
 			return fail(err)
 		}
-		return model.Result{Status: model.StatusSetSuccess }, nil
+		return model.Result{Status: model.StatusSetSuccess}, nil
 	case model.CmdGet:
 		val, err := DispatchGet(cmd, store)
 		if err == nil {

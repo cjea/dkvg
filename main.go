@@ -17,60 +17,57 @@ import (
 )
 
 var Store *model.Store
+
 type InputHandler struct {
 	model.WriteConfig
 	Store *model.Store
-	WAL *wal.WAL
-}
-
-func (h InputHandler) HandleRawInput(raw string) {
-	 debugStore := func() string {
-		buf, err := json.Marshal(h.Store.Store)
-		must(err)
-		return fmt.Sprintf("VERSION %d\n%s\n", h.Store.GlobalVersion, string(buf))
-	 }
-	res := data_pipeline.Process(h.Store, raw, h.WAL)
-	switch res.Status {
-	case model.StatusResultFailed:
-		h.WriteErr(res.Message+"\n"+fmt.Sprintf("\n***STORE\n%s\n", debugStore()))
-	case model.StatusGetNoFound:
-		h.WriteOut(model.NullDisplay+"\n"+fmt.Sprintf("\n***STORE\n%s\n", debugStore()))
-	case model.StatusSetSuccess:
-		h.WriteOut(model.SetOK+"\n"+debugStore())
-	case model.StatusSyncSuccess:
-		h.WriteOut(debugStore()+"\n")
-	case model.StatusSnapshotSuccess:
-		h.WriteOut("Persisted snapshot"+"\n"+debugStore()+"\n")
-	default:
-		h.WriteOut(res.Message+"\n"+(fmt.Sprintf("\n***STORE\n%s\n", debugStore())))
-	}
-}
-
-func stdOutWrite(s string, as ...interface{}) {
-	fmt.Fprintf(os.Stdout, s, as...)
-}
-
-func stdErrWrite(s string, as ...interface{}) {
-	fmt.Fprintf(os.Stderr, s, as...)
+	WAL   *wal.WAL
 }
 
 func REPL(cfg *config.Config, s *model.Store, w *wal.WAL) {
 	scanner := bufio.NewScanner(os.Stdin)
 	handler := InputHandler{
 		Store: s,
-		WAL: w,
+		WAL:   w,
 		WriteConfig: model.WriteConfig{
-			WriteOut: stdOutWrite,
-			WriteErr:  stdErrWrite,
+			WriteOut: func(s string, as ...interface{}) {
+				fmt.Fprintf(os.Stdout, s, as...)
+			},
+			WriteErr: func(s string, as ...interface{}) {
+				fmt.Fprintf(os.Stderr, s, as...)
+			},
 		},
 	}
-	fmt.Printf(model.PROMPT)
+	handler.WriteOut(model.PROMPT)
 	for scanner.Scan() {
-		handler.HandleRawInput(scanner.Text())
-		fmt.Printf(model.PROMPT)
+		handler.ExecuteUserCommand(scanner.Text())
+		handler.WriteOut(model.PROMPT)
 	}
 }
 
+func (h InputHandler) ExecuteUserCommand(raw string) {
+	debugStore := func() string {
+		buf, err := json.Marshal(h.Store.Store)
+		must(err)
+		return fmt.Sprintf("VERSION %d\n%s\n", h.Store.GlobalVersion, string(buf))
+	}
+	res := data_pipeline.Process(h.Store, raw, h.WAL)
+	switch res.Status {
+	case model.StatusResultFailed:
+		h.WriteErr(res.Message + "\n" + fmt.Sprintf("\n***STORE\n%s\n", debugStore()))
+	case model.StatusGetNoFound:
+		h.WriteOut(model.NullDisplay + "\n" + fmt.Sprintf("\n***STORE\n%s\n", debugStore()))
+	case model.StatusSetSuccess:
+		h.WriteOut(model.SetOK + "\n" + debugStore())
+	case model.StatusSnapshotSuccess:
+		h.WriteOut("Persisted snapshot" + "\n" + debugStore() + "\n")
+	default:
+		h.WriteOut(res.Message + "\n" + (fmt.Sprintf("\n***STORE\n%s\n", debugStore())))
+	}
+}
+
+// NewSocketWriteConfig sends all writes to the connection. Maybe in the future
+// it should be optional to specify custom write functions instead.
 func NewSocketWriteConfig(c net.Conn) model.WriteConfig {
 	return model.WriteConfig{
 		WriteOut: func(s string, args ...interface{}) {
@@ -82,11 +79,11 @@ func NewSocketWriteConfig(c net.Conn) model.WriteConfig {
 	}
 }
 
-func HandleNetworkReceived(c net.Conn, store *model.Store, w *wal.WAL) {
+func HandleUserCommand(c net.Conn, store *model.Store, w *wal.WAL) {
 	buf := make([]byte, 1<<9)
 	handler := InputHandler{
-		WAL: w,
-		Store: store,
+		WAL:         w,
+		Store:       store,
 		WriteConfig: NewSocketWriteConfig(c),
 	}
 	for {
@@ -98,11 +95,11 @@ func HandleNetworkReceived(c net.Conn, store *model.Store, w *wal.WAL) {
 			}
 			break
 		}
-		handler.HandleRawInput(string(buf[0:nr]))
+		handler.ExecuteUserCommand(string(buf[0:nr]))
 	}
 }
 
-func ListenUnixSocket(cfg *config.Config, s *model.Store, w *wal.WAL) {
+func AcceptUserCommand(cfg *config.Config, s *model.Store, w *wal.WAL) {
 	var err error
 	l, err := net.Listen("unix", cfg.SockName)
 	must(err)
@@ -110,15 +107,17 @@ func ListenUnixSocket(cfg *config.Config, s *model.Store, w *wal.WAL) {
 
 	for {
 		fd, err := l.Accept()
-		fmt.Fprintf(os.Stderr, "Accepted new connection\n")
+		fmt.Fprintf(os.Stderr, "Accepted new user command\n")
 		must(err)
-		go HandleNetworkReceived(fd, s, w)
+		go HandleUserCommand(fd, s, w)
 	}
 }
 
 func WriteWAL(w io.Writer) error {
 	r, err := os.Open("wal.log")
-	must(err)
+	if err != nil {
+		return err
+	}
 	buf := make([]byte, 1<<16)
 	for {
 		nbytes, err := r.Read(buf)
@@ -133,7 +132,8 @@ func WriteWAL(w io.Writer) error {
 }
 
 var RequestTypeCatchup byte = 'C'
-func validateCatchupRequest (p []byte) error {
+
+func validateCatchupRequest(p []byte) error {
 	if p[0] != RequestTypeCatchup {
 		return fmt.Errorf("the endpoint only accepts catchup requests")
 	}
@@ -146,10 +146,14 @@ func HandleCatchupRequest(wc io.ReadWriteCloser, p []byte) {
 		wc.Write([]byte(err.Error()))
 		wc.Close()
 	}
-	must(WriteWAL(wc))
+	if err = WriteWAL(wc); err != nil {
+		fmt.Printf("%s\n", err.Error())
+		wc.Write([]byte("unexpected error"))
+		wc.Close()
+	}
 }
 
-func ListenCatchupRequests() {
+func AcceptCatchupRequests() {
 	l, err := net.ListenTCP(
 		"tcp",
 		&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1025},
@@ -159,7 +163,7 @@ func ListenCatchupRequests() {
 	for {
 		conn, err := l.AcceptTCP()
 		must(err)
-		fmt.Fprintf(os.Stderr, "Accepted new connection\n")
+		fmt.Fprintf(os.Stderr, "Accepted new catchup request\n")
 		var buf []byte = make([]byte, 1<<8)
 		_, err = conn.Read(buf)
 		must(err)
@@ -169,9 +173,8 @@ func ListenCatchupRequests() {
 
 func main() {
 	// send 'C' via `nc localhost 1025` to stream the WAL.
-	ListenCatchupRequests()
+	AcceptCatchupRequests()
 }
-
 
 func main2() {
 	run()
@@ -181,10 +184,9 @@ func run() {
 	cfg := config.NewDefaultConfig()
 	cfg.ParseArgs(os.Args[1:])
 	s := &model.Store{
-		Store: nil,
+		Store:         nil,
 		GlobalVersion: 0,
-		Mutex: &sync.RWMutex{},
-		OutputPath: cfg.OutputFile,
+		Mutex:         &sync.RWMutex{},
 	}
 
 	h, err := wal.NewestSnapshot()
@@ -203,7 +205,7 @@ func run() {
 	if cfg.UseREPL {
 		REPL(cfg, s, w)
 	} else {
-		ListenUnixSocket(cfg, s, w)
+		AcceptUserCommand(cfg, s, w)
 	}
 }
 

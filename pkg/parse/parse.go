@@ -6,16 +6,6 @@ import (
 	"strings"
 )
 
-func ParseSync(raw string) (*model.Cmd, error) {
-	if raw != "sync" {
-		return nil, fmt.Errorf("sync does not take args in '%s': %w", raw, model.ErrBadCommand)
-	}
-	return &model.Cmd{
-		Type: model.CmdSync,
-		Data: "",
-	}, nil
-}
-
 func ParseSnapshot(raw string) (*model.Cmd, error) {
 	if raw != "snapshot" {
 		return nil, fmt.Errorf("snapshot does not take args in '%s': %w", raw, model.ErrBadCommand)
@@ -64,19 +54,15 @@ func ParseSetRaw(raw string) (*model.Cmd, error) {
 	}, nil
 }
 
-
 func Parse(raw string) (*model.Cmd, error) {
 	raw = strings.TrimSpace(raw)
 	if strings.HasPrefix(raw, model.PrefixSet) {
 		return ParseSetRaw(strings.TrimPrefix(raw, model.PrefixSet))
 	} else if strings.HasPrefix(raw, model.PrefixGet) {
 		return ParseGetRaw(strings.TrimPrefix(raw, model.PrefixGet))
-	} else if strings.HasPrefix(raw, model.PrefixSync) {
-		return ParseSync(raw)
 	} else if strings.HasPrefix(raw, model.PrefixSnapshot) {
 		return ParseSnapshot(raw)
 	}
-
 
 	return nil, fmt.Errorf("'%s': %w", raw, model.ErrBadCommand)
 }

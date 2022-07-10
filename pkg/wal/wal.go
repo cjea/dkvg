@@ -13,15 +13,14 @@ import (
 	"unsafe"
 )
 
-
 type WALPath string
 
 type WAL struct {
-	Cmds []*model.WALCmd
-	Path string
+	Cmds       []*model.WALCmd
+	Path       string
 	FileHandle *os.File
-	Mutex *sync.RWMutex
-	offset uint64
+	Mutex      *sync.RWMutex
+	offset     uint64
 }
 
 func (w *WAL) SetOffset(o uint64) {
@@ -32,7 +31,7 @@ func (w *WAL) GlobalVersion() uint64 {
 	if len(w.Cmds) == 0 {
 		return 0
 	}
-	return w.Cmds[len(w.Cmds) - 1].GlobalVersion
+	return w.Cmds[len(w.Cmds)-1].GlobalVersion
 }
 
 func (w *WAL) NextGlobalVersion() uint64 {
@@ -76,11 +75,12 @@ func SerializeCmdForWAL(c *model.Cmd) []byte {
 }
 
 type byModTime []fs.FileInfo
+
 func (s byModTime) Len() int {
 	return len(s)
 }
 func (s byModTime) Swap(i, j int) {
-		s[i], s[j] = s[j], s[i]
+	s[i], s[j] = s[j], s[i]
 }
 func (s byModTime) Less(i, j int) bool {
 	return s[i].ModTime().Before(s[j].ModTime())
@@ -96,7 +96,7 @@ func NewestSnapshot() (*SnapshotHandle, error) {
 	if len(infos) == 0 {
 		return nil, nil
 	}
-	info := infos[len(infos) - 1]
+	info := infos[len(infos)-1]
 	h := &SnapshotHandle{
 		FullPath: fmt.Sprintf("snapshot/%s", info.Name()),
 		FileInfo: info,
@@ -119,7 +119,7 @@ func ListAllSnapshots() ([]fs.FileInfo, error) {
 		if !strings.HasSuffix(n, ".snapshot") {
 			continue
 		}
-		info, err := os.Stat("snapshot/"+n)
+		info, err := os.Stat("snapshot/" + n)
 		if err != nil {
 			return nil, err
 		}
@@ -140,7 +140,7 @@ func NewWAL(path string) (*WAL, error) {
 	var err error
 	prelude := model.WALMagicNumber
 	preludeBytes := *(*[4]byte)(unsafe.Pointer(&prelude))
-	versionBytes := []byte{0,0,0,0,0,0,0,0}
+	versionBytes := []byte{0, 0, 0, 0, 0, 0, 0, 0}
 	rw, err := os.OpenFile(string(path), os.O_RDWR|os.O_CREATE, 0644)
 	_, err = rw.Write(preludeBytes[:])
 	if err != nil {
@@ -151,14 +151,14 @@ func NewWAL(path string) (*WAL, error) {
 		return nil, err
 	}
 	return &WAL{
-		Cmds: []*model.WALCmd{},
-		Path: path,
+		Cmds:       []*model.WALCmd{},
+		Path:       path,
 		FileHandle: rw,
-		Mutex: &sync.RWMutex{},
+		Mutex:      &sync.RWMutex{},
 	}, nil
 }
 
-func ParseWAL (path string) (*WAL, error) {
+func ParseWAL(path string) (*WAL, error) {
 	fmt.Printf("Parsing WAL at '%s'\n", path)
 	var err error
 	_, err = os.Stat(string(path))
@@ -178,11 +178,11 @@ func ParseWAL (path string) (*WAL, error) {
 		return nil, fmt.Errorf("WAL is corrupt")
 	}
 	wal := WAL{
-		Cmds: []*model.WALCmd{},
-		Path: path,
-		Mutex: &sync.RWMutex{},
+		Cmds:       []*model.WALCmd{},
+		Path:       path,
+		Mutex:      &sync.RWMutex{},
 		FileHandle: rw,
-		offset: 0,
+		offset:     0,
 	}
 	highestVersion := uint64(0)
 	// Add 4 for the magic number, 8 for the uint64 version.
@@ -234,7 +234,7 @@ func (w *WAL) Append(c *model.Cmd) error {
 
 	entry := make([]byte, entryLen)
 	copy(entry, bytes)
-	copy(entry[entryLen - 8:], globalVersion[:])
+	copy(entry[entryLen-8:], globalVersion[:])
 	if _, err = w.FileHandle.Seek(0, 2); err != nil {
 		return err
 	}

@@ -84,7 +84,11 @@ func NewSocketWriteConfig(c net.Conn) model.WriteConfig {
 
 func HandleNetworkReceived(c net.Conn, store *model.Store, w *wal.WAL) {
 	buf := make([]byte, 1<<9)
-	handler := InputHandler{WriteConfig: NewSocketWriteConfig(c), Store: store, WAL: w}
+	handler := InputHandler{
+		WAL: w,
+		Store: store,
+		WriteConfig: NewSocketWriteConfig(c),
+	}
 	for {
 		handler.WriteConfig.WriteErr(model.PROMPT)
 		nr, err := c.Read(buf)
@@ -112,17 +116,64 @@ func ListenUnixSocket(cfg *config.Config, s *model.Store, w *wal.WAL) {
 	}
 }
 
-// func main() {
-// 	r, err := os.Open("snapshot/1657249158_store.snapshot")
-// 	must(err)
-// 	raw, err := ioutil.ReadAll(r)
-// 	must(err)
-// 	version, data, err := shot.ParseSnapshot(raw)
-// 	must(err)
-// 	fmt.Printf("parsed version=%v\ndata=%v\n", version, data)
-// }
+func WriteWAL(w io.Writer) error {
+	r, err := os.Open("wal.log")
+	must(err)
+	buf := make([]byte, 1<<16)
+	for {
+		nbytes, err := r.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				return err
+			}
+			return nil
+		}
+		w.Write(buf[0:nbytes])
+	}
+}
+
+var RequestTypeCatchup byte = 'C'
+func validateCatchupRequest (p []byte) error {
+	if p[0] != RequestTypeCatchup {
+		return fmt.Errorf("the endpoint only accepts catchup requests")
+	}
+	return nil
+}
+
+func HandleCatchupRequest(wc io.ReadWriteCloser, p []byte) {
+	var err error
+	if err = validateCatchupRequest(p); err != nil {
+		wc.Write([]byte(err.Error()))
+		wc.Close()
+	}
+	must(WriteWAL(wc))
+}
+
+func ListenCatchupRequests() {
+	l, err := net.ListenTCP(
+		"tcp",
+		&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1025},
+	)
+	must(err)
+
+	for {
+		conn, err := l.AcceptTCP()
+		must(err)
+		fmt.Fprintf(os.Stderr, "Accepted new connection\n")
+		var buf []byte = make([]byte, 1<<8)
+		_, err = conn.Read(buf)
+		must(err)
+		go HandleCatchupRequest(conn, buf)
+	}
+}
 
 func main() {
+	// send 'C' via `nc localhost 1025` to stream the WAL.
+	ListenCatchupRequests()
+}
+
+
+func main2() {
 	run()
 }
 

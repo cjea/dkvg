@@ -226,7 +226,6 @@ func (w *WAL) Append(c *model.Cmd) error {
 	bytes := SerializeCmdForWAL(c)
 	entryLen := len(bytes) + 8
 	v := w.NextGlobalVersion()
-	fmt.Printf("about to append command version=%d\n", v)
 	globalVersion := *(*[8]byte)(unsafe.Pointer(&v))
 
 	w.Mutex.Lock()
@@ -265,7 +264,7 @@ func BuildStore(wal *WAL, s *model.Store) error {
 	for _, cm := range wal.Cmds {
 		if cm.GlobalVersion <= s.GlobalVersion {
 			fmt.Printf(
-				"Skipping command %#v\n , which is less than store version %d\n",
+				"Skipping command %d, which store version %d already has\n",
 				cm.GlobalVersion, s.GlobalVersion,
 			)
 			continue

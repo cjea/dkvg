@@ -13,6 +13,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -113,7 +115,8 @@ func AcceptUserCommand(cfg *config.Config, s *model.Store, w *wal.WAL) {
 	}
 }
 
-func WriteWAL(w io.Writer) error {
+func WriteWAL(w io.Writer, version uint64) error {
+	fmt.Printf("TODO: handle the version in WriteWAL (would be %d)\n", version)
 	r, err := os.Open("wal.log")
 	if err != nil {
 		return err
@@ -133,24 +136,51 @@ func WriteWAL(w io.Writer) error {
 
 var RequestTypeCatchup byte = 'C'
 
-func validateCatchupRequest(p []byte) error {
-	if p[0] != RequestTypeCatchup {
-		return fmt.Errorf("the endpoint only accepts catchup requests")
+func validateCatchupRequest(p []byte) (uint64, error) {
+	usage := func() (uint64, error) {
+		return 0, fmt.Errorf("invalid catchup request. 'C<VERSION>'")
 	}
-	return nil
+
+	if p[0] != RequestTypeCatchup {
+		return usage()
+	}
+	isDigit := func(b byte) bool {
+		switch b {
+		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			return true
+		}
+		return false
+	}
+	sb := strings.Builder{}
+	for _, d := range p[1:] {
+		if !isDigit(d) {
+			break
+		}
+		sb.WriteByte(d)
+	}
+	if sb.Len() < 1 {
+		return usage()
+	}
+	i, err := strconv.Atoi(sb.String())
+	if err != nil {
+		return 0, err
+	}
+	return uint64(i), nil
 }
 
 func HandleCatchupRequest(wc io.ReadWriteCloser, p []byte) {
 	var err error
-	if err = validateCatchupRequest(p); err != nil {
+	var version uint64
+	if version, err = validateCatchupRequest(p); err != nil {
 		wc.Write([]byte(err.Error()))
 		wc.Close()
+		return
 	}
-	if err = WriteWAL(wc); err != nil {
+	if err = WriteWAL(wc, version); err != nil {
 		fmt.Printf("%s\n", err.Error())
 		wc.Write([]byte("unexpected error"))
-		wc.Close()
 	}
+	wc.Close()
 }
 
 func AcceptCatchupRequests() {
@@ -173,11 +203,11 @@ func AcceptCatchupRequests() {
 
 func main() {
 	// send 'C' via `nc localhost 1025` to stream the WAL.
-	AcceptCatchupRequests()
+	go AcceptCatchupRequests()
+	run()
 }
 
 func main2() {
-	run()
 }
 
 func run() {
